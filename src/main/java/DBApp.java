@@ -113,9 +113,9 @@ public class DBApp implements DBAppInterface {
 				String[] data = row.split(",");
 				if (data[0].equals(tableName)) {
 					tableFound = true;
-				}
-				if (data[3].toLowerCase().equals("true")) {
-					clusteringKey = data[1];
+					if (data[3].toLowerCase().equals("true")) {
+						clusteringKey = data[1];
+					}
 				}
 			}
 
@@ -438,7 +438,8 @@ public class DBApp implements DBAppInterface {
 							if (tableIndexed) {
 								deleteRowFromIndex(tableName, lastTuple, (Comparable) lastTuple.get(clusteringKey));
 								insertRowIntoIndex(tableName, lastTuple, tableName + "Page" + newPageDiskNum,
-										clusteringKey);
+										(Comparable) colNameValue.get(clusteringKey));
+//								System.out.println("Insert" + (Comparable) colNameValue.get(clusteringKey));
 							}
 
 							System.out.println("*Page " + (newPageDiskNum) + " has been created & row inserted at 0");
@@ -615,7 +616,7 @@ public class DBApp implements DBAppInterface {
 
 		if (tableIndexed) {
 			insertRowIntoIndex(tableName, colNameValue, finalPageName, (Comparable) colNameValue.get(clusteringKey));
-			System.out.println("inserted new tuple to index " + colNameValue);
+			System.out.println("inserted new tuple to index " + (Comparable) colNameValue.get(clusteringKey));
 		}
 	}
 
@@ -791,6 +792,7 @@ public class DBApp implements DBAppInterface {
 				if (tableIndexed) {
 					insertRowIntoIndex(tableName, selectedRow, tableName + "Page" + htblpageNum.get(pageNumber),
 							(Comparable) selectedRow.get(clusteringKeyName));
+//					System.out.println("Update " + selectedRow.get(clusteringKeyName));
 				}
 				serialize(curPage, tableName + "Page" + htblpageNum.get(pageNumber));
 //					break;
@@ -820,6 +822,7 @@ public class DBApp implements DBAppInterface {
 		String clusteringKeyType = "";
 		Vector<String> colNames = new Vector<String>();
 		boolean tableIndexed = false;
+		Vector<String> colsIndexed = new Vector<String>();
 
 		try {
 			String row = "";
@@ -839,6 +842,9 @@ public class DBApp implements DBAppInterface {
 
 					if (data[4].toLowerCase().equals("true")) {
 						tableIndexed = true;
+						if (columnNameValue.containsKey(data[1])) {
+							colsIndexed.add(data[1]);
+						}
 					}
 				}
 			}
@@ -950,6 +956,142 @@ public class DBApp implements DBAppInterface {
 //				pageNumber++;
 //			}
 
+//---------------------------------------------------------------------------------------------------------------------------
+//modification
+		} else if (tableIndexed && colsIndexed.size() > 0) {
+			try {
+				Vector<Index> indices = (Vector<Index>) deserialize(tableName + "Index");
+				int max = 0;
+				Index index = null;
+
+				for (Index cur : indices) {
+					int curCount = 0;
+					Vector<String> curCols = cur.colNames;
+					for (String s : columnNameValue.keySet()) {
+						if (curCols.contains(s))
+							curCount++;
+					}
+					if (curCount > max) {
+						max = curCount;
+						index = cur;
+					}
+				}
+
+				Vector<Integer> pos = new Vector<Integer>();
+				int colNum = 0;
+				for (String col : index.colNames) {
+					if (!columnNameValue.containsKey(col)) {
+						pos.add(-1);
+					} else {
+						int p = indexBinarySearch(index.maxRange.get(colNum), (Comparable) columnNameValue.get(col), 0,
+								9);
+						pos.add(p);
+					}
+					colNum++;
+				}
+
+				Vector<Object> bucketNames = index.getRange(pos);
+				Vector<String> pages = new Vector<String>();
+
+				for (Object bucketObj : bucketNames) {
+					String curBucket = (String) bucketObj;
+					int count = 0;
+					File f = new File(this.dir + curBucket + count + ".class");
+
+					while (f.exists()) {
+						try {
+							Vector<BucketData> bucket = (Vector<BucketData>) deserialize(curBucket + count);
+							for (int i = 0; i < bucket.size(); i++) {
+								BucketData data = bucket.get(i);
+								boolean addToPages = true;
+
+								for (String s : data.data.keySet()) {
+									if (columnNameValue.containsKey(s)) {
+										Comparable compBucketValue = (Comparable) data.data.get(s);
+										if (((Comparable) columnNameValue.get(s)).compareTo(compBucketValue) != 0)
+											addToPages = false;
+									}
+								}
+								if (addToPages && !pages.contains(data.pageName))
+									pages.add(data.pageName);
+
+							}
+						} catch (ClassNotFoundException | IOException e) {
+							e.printStackTrace();
+						}
+
+						count++;
+						f = new File(this.dir + curBucket + count + ".class");
+					}
+
+				}
+				for (String page : pages) {
+					Vector<Hashtable<String, Object>> curPage;
+					try {
+						curPage = (Vector<Hashtable<String, Object>>) deserialize(page);
+
+						Vector<Hashtable<String, Object>> rowsToBedeleted = new Vector<Hashtable<String, Object>>();
+
+						for (Hashtable<String, Object> row : curPage) {
+							boolean deleteRow = true;
+							for (String colName : columnNameValue.keySet()) {
+								if (!(((Comparable) row.get(colName))
+										.compareTo((Comparable) columnNameValue.get(colName)) == 0)) {
+									deleteRow = false;
+									break;
+								}
+							}
+							if (deleteRow) {
+								rowsToBedeleted.add(row);
+							}
+						}
+						for (Hashtable<String, Object> row : rowsToBedeleted) {
+
+							if (tableIndexed) {
+								deleteRowFromIndex(tableName, row, (Comparable) row.get(clusteringKeyName));
+							}
+
+							System.out.println("Index delete " + row + " from page " + page);
+
+							curPage.remove(row);
+							if (curPage.size() == 0) {
+								String filePath = System.getProperty("user.dir");
+								File file = new File(filePath.concat(("/src/main/resources/data/" + tableName + "Page"
+										+ htblpageNum.get(pageNumber) + ".class")));
+								file.delete();
+
+								int maxCodePageNum = 0;
+								for (int i : htblpageNum.keySet()) {
+									maxCodePageNum = (i > maxCodePageNum) ? i : maxCodePageNum;
+								}
+								for (int i = pageNumber; i < maxCodePageNum; i++) {
+									htblpageNum.put(i, htblpageNum.get(i + 1));
+									meta.getMaxInPages().set(i, meta.getMaxInPages().get(i + 1));
+								}
+								htblpageNum.remove(maxCodePageNum);
+								meta.setPageNumber(htblpageNum);
+								meta.getMaxInPages().remove(maxCodePageNum);
+								serialize(meta, tableName + "Meta");
+
+							} else {
+								meta.getMaxInPages().set(pageNumber,
+										(Comparable) curPage.get(curPage.size() - 1).get(clusteringKeyName));
+								serialize(meta, tableName + "Meta");
+								serialize(curPage, tableName + "Page" + htblpageNum.get(pageNumber));
+							}
+
+						}
+
+					} catch (ClassNotFoundException | IOException e) {
+						break;
+					}
+				}
+
+			} catch (ClassNotFoundException | IOException e) {
+				e.printStackTrace();
+			}
+
+//---------------------------------------------------------------------------------------------------------------------------			
 		} else {
 			while (true) {
 				Vector<Hashtable<String, Object>> curPage;
@@ -1078,6 +1220,17 @@ public class DBApp implements DBAppInterface {
 			}
 		}
 
+		if (sqlTerms.length == 1) {
+			if (indexed) {
+				return execOneTermIndex(sqlTerms[0], sqlIndices.get(0), indices);
+			} else if (containsClustering(sqlTerms[0])) {
+				return execTermBinary(sqlTerms[0]).iterator();
+			} else {
+				return execTermLinearly(sqlTerms[0]).iterator();
+			}
+
+		}
+
 		for (int i = 0; i < arrayOperators.length; i++) {
 
 			String operator = arrayOperators[i];
@@ -1143,6 +1296,34 @@ public class DBApp implements DBAppInterface {
 //		System.out.println(prevResult);
 
 		return prevResult.iterator();
+	}
+
+	private Iterator execOneTerm(SQLTerm sqlTerm) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	private Iterator execOneTermIndex(SQLTerm op, Vector<Integer> indices1, Vector<Index> tableIndices)
+			throws DBAppException {
+
+		boolean op1Clustering = containsClustering(op);
+		String oper1 = op._strOperator;
+
+		Vector<Hashtable<String, Object>> r1;
+
+		if (op1Clustering && (oper1.equals("=") || oper1.equals(">=") || oper1.equals(">")))
+			r1 = execTermBinary(op);
+		else {
+			if (indices1.isEmpty()) {
+				r1 = execTermLinearly(op);
+			} else {
+				Index indexUsed = tableIndices.get(indices1.get(0));
+				r1 = execTermUsingIndex(op, indexUsed);
+			}
+		}
+
+		return r1.iterator();
+
 	}
 
 	public Vector<Hashtable<String, Object>> execOperationAnd(Vector<SQLTerm> andedTerms,
@@ -1226,6 +1407,7 @@ public class DBApp implements DBAppInterface {
 			while (f.exists()) {
 				try {
 					Vector<BucketData> bucket = (Vector<BucketData>) deserialize(curBucket + count);
+					// System.out.println(bucket);
 					for (int i = 0; i < bucket.size(); i++) {
 						BucketData data = bucket.get(i);
 						if (satisfySql(data.data, andedTerms)) {
@@ -2367,7 +2549,6 @@ public class DBApp implements DBAppInterface {
 						int pos = indexBinarySearch(maxValues, c, 0, 9);
 						insertPos.add(pos);
 					}
-
 					insertIntoIndex(grid, insertPos, indexedCols, pageName, tableName, clusteringKeyObject);
 				}
 
@@ -2532,6 +2713,7 @@ public class DBApp implements DBAppInterface {
 
 					Vector<BucketData> toDelete = new Vector<BucketData>();
 					for (BucketData row : bucket) {
+//						System.out.println(row);
 						if (row.clusteringKey.compareTo(clusteringKey) == 0) {
 							toDelete.add(row);
 							deleteSuccess = true;
@@ -2657,7 +2839,7 @@ public class DBApp implements DBAppInterface {
 			max.add("p");
 			max.add("u");
 			max.add("z");
-		}else if (minStr.charAt(0) >= '0' && maxStr.charAt(0) <= '9') {
+		} else if (minStr.charAt(0) >= '0' && maxStr.charAt(0) <= '9') {
 			min.add("0");
 			min.add("1");
 			min.add("2");
@@ -2679,7 +2861,7 @@ public class DBApp implements DBAppInterface {
 			max.add("8");
 			max.add("9");
 			max.add(":");
-		}else {
+		} else {
 			min.add("0");
 			min.add("5");
 			min.add("A");
@@ -2784,7 +2966,7 @@ public class DBApp implements DBAppInterface {
 //		System.out.println();
 
 //		htblColNameValue.clear();
-//		htblColNameValue.put("name", "Ahmed Noor");
+//		htblColNameValue.put("gpa", new Double(1.47));
 //		dbApp.deleteFromTable(strTableName, htblColNameValue);
 //		
 //		htblColNameValue.clear();
@@ -2793,8 +2975,7 @@ public class DBApp implements DBAppInterface {
 //		
 //		
 //		
-//		htblColNameValue.put("gpa", new Double(2.23));
-//	
+//		htblColNameValue.put("gpa", new Double(1047));
 //		dbApp.updateTable(strTableName, "5674567", htblColNameValue);
 
 //		
@@ -2814,14 +2995,14 @@ public class DBApp implements DBAppInterface {
 //		
 
 //-------------------------------------------------------------------------------------------------------
-
+//
 //		htblColNameValue.put("id", new Integer(104));
 //		htblColNameValue.put("name", new String("Ahmed 5"));
 //		htblColNameValue.put("gpa", new Double(1.35));
 //		dbApp.insertIntoTable(strTableName, htblColNameValue);
 //
 //		
-////		
+//		
 //		System.out.println(deserialize("StudentPage0").toString());
 //		System.out.println(deserialize("StudentPage1").toString());
 //		System.out.println(deserialize("StudentPage2").toString());
@@ -2829,10 +3010,10 @@ public class DBApp implements DBAppInterface {
 //		System.out.println(deserialize("StudentPage4").toString());
 //		System.out.println(deserialize("StudentPage5").toString());
 //		System.out.println(deserialize("StudentPage6").toString());
-
+//
 //		System.out.println("--------------------------------------");
-
-//		SQLTerm[] arrSQLTerms = new SQLTerm[4];
+//
+//		SQLTerm[] arrSQLTerms = new SQLTerm[2];
 //
 //		arrSQLTerms[0] = new SQLTerm();
 //		arrSQLTerms[1] = new SQLTerm();
@@ -2840,18 +3021,18 @@ public class DBApp implements DBAppInterface {
 //		arrSQLTerms[3] = new SQLTerm();
 //
 //		arrSQLTerms[0]._strTableName = "students";
-//		arrSQLTerms[0]._strColumnName = "first_name";
-//		arrSQLTerms[0]._strOperator = "<=";
-//		arrSQLTerms[0]._objValue = "Hazem";
+//		arrSQLTerms[0]._strColumnName = "id";
+//		arrSQLTerms[0]._strOperator = "=";
+//		arrSQLTerms[0]._objValue = "88-4229";
 //
 //		arrSQLTerms[1]._strTableName = "students";
-//		arrSQLTerms[1]._strColumnName = "id";
+//		arrSQLTerms[1]._strColumnName = "gpa";
 //		arrSQLTerms[1]._strOperator = ">=";
-//		arrSQLTerms[1]._objValue = "10";
+//		arrSQLTerms[1]._objValue = new Double(3.5);
 //
 //		arrSQLTerms[2]._strTableName = "students";
 //		arrSQLTerms[2]._strColumnName = "gpa";
-//		arrSQLTerms[2]._strOperator = "<=";
+//		arrSQLTerms[2]._strOperator = "=";
 //		arrSQLTerms[2]._objValue = new Double(1.47);
 //
 //		arrSQLTerms[3]._strTableName = "students";
@@ -2859,8 +3040,8 @@ public class DBApp implements DBAppInterface {
 //		arrSQLTerms[3]._strOperator = ">=";
 //		arrSQLTerms[3]._objValue = new Date(1995 - 1900, 5 - 1, 30);
 //
-//		String[] strarrOperators = new String[3];
-//		strarrOperators[0] = "AND";
+//		String[] strarrOperators = new String[1];
+//		strarrOperators[0] = "OR";
 //		strarrOperators[1] = "AND";
 //		strarrOperators[2] = "AND";
 //
@@ -2874,7 +3055,7 @@ public class DBApp implements DBAppInterface {
 //			System.out.println(resultSet.next());
 //		System.out.println(
 //				"-------------------------------------------------------------------------------------------------------");
-
+//
 //		System.out.println();
 //
 //		Vector indexVector = (Vector) deserialize("StudentIndex");

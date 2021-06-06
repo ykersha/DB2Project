@@ -22,7 +22,7 @@ public class BucketData implements Serializable{
 	@Override
 	public String toString() {
 		// TODO Auto-generated method stub
-		return data.toString();
+		return "Data: " + data.toString() + " Clustering: " + clusteringKey + " page: " + pageName;
 	}
 	
 	
